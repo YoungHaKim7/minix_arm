@@ -17,3 +17,17 @@ git clone http://repo.or.cz/r/minix.git
 | src/kernel/{proc,sched,ipc,clock,system}.rs | kernel/{proc.h,proc.c,clock.c,system.c} |
 | src/arch.rs + asm/boot.S | kernel/arch/* (aarch64 replaces i386/earm) |
 | src/servers/{pm,tty,init}.rs | servers/pm, drivers/tty, servers/init |
+
+# 만들어야할 부분 
+
+```bash
+Study MINIX kernel sources (proc, ipc, main, scheduler)
+
+Write minix types: message, endpoints, call numbers
+Write aarch64 arch layer: boot.S, vectors, MMU, GIC, timer
+Write kernel core: proc table, RTS flags, scheduler
+Write MINIX IPC: do_ipc, mini_send/receive/notify, deadlock
+Write clock task + kernel calls (system)
+Write user-mode servers: PM, TTY, init demo
+Build for aarch64 and boot-test in QEMU
+```

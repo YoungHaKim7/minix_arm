@@ -10,10 +10,6 @@
 .global _start
 .type _start, %function
 _start:
-    // Debug: mark boot progress on the UART (PL011 on QEMU virt).
-    ldr x9, =0x09000000
-    mov w10, #0x42               // 'B'
-    strb w10, [x9]
     // QEMU -kernel enters at EL2 on the virt machine (no EL3 firmware).
     mrs x0, CurrentEL
     lsr x0, x0, #2
@@ -42,10 +38,6 @@ _start:
     eret
 
 .Lel1:
-    // Debug: reached EL1.
-    ldr x9, =0x09000000
-    mov w10, #0x31               // '1'
-    strb w10, [x9]
     msr spsel, #1               // use SP_EL1 from here on
     ldr x0, =_stack_top
     mov sp, x0

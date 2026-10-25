@@ -169,6 +169,13 @@ pub unsafe fn proc_init() {
     }
 }
 
+/// Park a process as blocked in RECEIVE from ANY (used for the CLOCK
+/// task, which never receives in this port).
+pub unsafe fn set_blocked_receiving(k: &mut crate::kernel::Kernel, i: usize) {
+    k.proc[i].p_getfrom_e = crate::minix::ANY;
+    super::sched::rts_set(k, i, RTS_RECEIVING);
+}
+
 /// Build one process slot and make it runnable — the boot-time part of
 /// `main.c`/`table.c` that installs the system image (IDLE task, the
 /// servers, init) into the process table.

@@ -55,7 +55,7 @@ pub extern "C" fn init_main() -> ! {
         let source = if m.m_source == CLOCK {
             "CLOCK"
         } else {
-            "?"
+            "PM"
         };
         tty_write("init: wakeup notification from ");
         tty_write(source);

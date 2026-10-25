@@ -44,6 +44,11 @@ pub unsafe fn sendrec(dst: i32, m: *mut Message) -> i32 {
     ipc_trap(SENDREC as u64, dst, m)
 }
 
+/// `notify()`: asynchronous notification (libminix `ipc_notify`).
+pub unsafe fn notify(dst: i32, m: *mut Message) -> i32 {
+    ipc_trap(NOTIFY as u64, dst, m)
+}
+
 /// Kernel call from a system process (SYS_* via SYSTEM task).
 pub unsafe fn kernel_call(m: *mut Message) -> i32 {
     let ret: u64;
@@ -79,8 +84,13 @@ unsafe fn ipc_trap(call: u64, srcdst: i32, m: *mut Message) -> i32 {
 #[repr(align(16))]
 pub struct UserStack([u64; USER_STACK_SIZE / 8]);
 
+// The stacks live in the .user zone (RW at EL0 and EL1), placed there
+// by asm/linker.ld.
+#[unsafe(link_section = ".user")]
 pub static mut PM_STACK: UserStack = UserStack([0; USER_STACK_SIZE / 8]);
+#[unsafe(link_section = ".user")]
 pub static mut TTY_STACK: UserStack = UserStack([0; USER_STACK_SIZE / 8]);
+#[unsafe(link_section = ".user")]
 pub static mut INIT_STACK: UserStack = UserStack([0; USER_STACK_SIZE / 8]);
 
 pub unsafe fn stack_top(s: *const UserStack) -> usize {

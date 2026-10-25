@@ -16,6 +16,10 @@
 // This is a direct C port: unsafe fns keep the C convention of an
 // implicitly unsafe body.
 #![allow(unsafe_op_in_unsafe_fn)]
+// The port keeps the full constant surfaces of the converted headers
+// (RTS_*/MF_*/SYS_*/...) even where this kernel does not use every
+// member yet.
+#![allow(dead_code)]
 
 mod arch;
 mod config;
@@ -51,6 +55,25 @@ unsafe fn build_proc_table() {
         false,
         0,
     );
+
+    // CLOCK task (kernel/clock.c): this port services ticks inside the
+    // interrupt handler, so the task itself stays blocked in RECEIVE
+    // forever - like the original waiting for its HARD_INT message - but
+    // its slot must exist so the CLOCK endpoint is valid for
+    // notifications.
+    let clock_idx = create_process(
+        k,
+        CLOCK,
+        "CLOCK",
+        idle_entry_addr(),
+        0,
+        SPSR_KERNEL,
+        config::TASK_Q,
+        true,
+        false,
+        0,
+    );
+    kernel::proc::set_blocked_receiving(k, clock_idx);
 
     // System servers at EL0: the Process Manager and the TTY driver.
     create_process(

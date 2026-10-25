@@ -54,9 +54,11 @@ unsafe extern "C" {
  *                MMU: identity map so EL0 processes can run                 *
  *===========================================================================*
  * MINIX gives every process its own address space through VM; this port
- * keeps a single flat identity map (one normal-memory region for RAM, one
- * device region for the peripherals), which is enough to run the EL0
- * servers on QEMU virt.
+ * keeps a single identity map with three permission zones (see
+ * asm/linker.ld).  Rule enforced by the architecture (and QEMU): EL1 may
+ * only execute from pages that are not writable at EL0, so the kernel
+ * text is read-only at both exception levels, kernel data is EL1-only,
+ * and user memory is RW for everyone but never executed.
  */
 
 #[repr(C, align(4096))]
@@ -66,43 +68,70 @@ struct PageTable {
 
 static mut L0_TABLE: PageTable = PageTable { entries: [0; 512] };
 static mut L1_TABLE: PageTable = PageTable { entries: [0; 512] };
+static mut L2_TABLE: PageTable = PageTable { entries: [0; 512] };
 
-// Stage-1 block descriptor bits.
+// Stage-1 descriptor bits.
 const DESC_BLOCK: u64 = 0b01;
+const DESC_TABLE: u64 = 0b11;
 const ATTR_MAIR_IDX_SHIFT: u64 = 2;
 const ATTR_NORMAL: u64 = 0 << ATTR_MAIR_IDX_SHIFT; // MAIR attr 0: WB cacheable
 const ATTR_DEVICE: u64 = 1 << ATTR_MAIR_IDX_SHIFT; // MAIR attr 1: Device nGnRE
-const AP_EL0_EL1: u64 = 1 << 6; // allow access from EL0 as well
+const AP_EL0_EL1_RW: u64 = 1 << 6; // RW at EL0 and EL1 (user memory)
+const AP_EL1_RW: u64 = 0 << 6; // RW at EL1 only (kernel data)
+const AP_RO_EL0_EL1: u64 = (1 << 6) | (1 << 7); // read-only at EL0 and EL1
 const SH_INNER_SHAREABLE: u64 = 3 << 8;
 const ACCESS_FLAG: u64 = 1 << 10;
 const PXN: u64 = 1 << 53; // privileged execute never
 const UXN: u64 = 1 << 54; // unprivileged execute never
 
 pub unsafe fn mmu_init() {
-    // 48-bit VA space (T0SZ=16): L0 table -> L1 1GB blocks.  (A start
-    // level of 1 with 39-bit VAs also maps the same memory, but QEMU's
-    // cortex-a57 faults EL1 fetches on level-1 blocks with AP[1] set.)
-    L0_TABLE.entries[0] = (&raw const L1_TABLE) as u64 | 0b11; // table descriptor
+    // Level 0 -> level 1 (48-bit VA, 4KB granule).
+    L0_TABLE.entries[0] = (&raw const L1_TABLE) as u64 | DESC_TABLE;
 
-    // 0x0000_0000 .. 0x3FFF_FFFF: peripherals (GIC at 0x0800_0000, PL011
-    // UART at 0x0900_0000).  Device memory, never executable.
+    // 0x0000_0000 .. 0x3FFF_FFFF: peripherals (GIC, PL011 UART) as one
+    // 1GB device block, RW at EL0 and EL1, never executable.
     L1_TABLE.entries[0] = 0x0000_0000
         | ATTR_DEVICE
-        | AP_EL0_EL1
+        | AP_EL0_EL1_RW
         | SH_INNER_SHAREABLE
         | ACCESS_FLAG
         | UXN
         | PXN
         | DESC_BLOCK;
 
-    // 0x4000_0000 .. 0x7FFF_FFFF: RAM (kernel image + process memory),
-    // normal cacheable, executable at EL0.
-    L1_TABLE.entries[1] = 0x4000_0000
+    // 0x4000_0000 .. 0x7FFF_FFFF: RAM, split into 2MB blocks with the
+    // zone permissions described in asm/linker.ld.
+    L1_TABLE.entries[1] = (&raw const L2_TABLE) as u64 | DESC_TABLE;
+
+    // 0x4000_0000: kernel text+rodata - RO at both ELs, executable by
+    // the kernel at EL1 and by the servers at EL0.
+    L2_TABLE.entries[0] = 0x4000_0000
         | ATTR_NORMAL
-        | AP_EL0_EL1
+        | AP_RO_EL0_EL1
         | SH_INNER_SHAREABLE
         | ACCESS_FLAG
         | DESC_BLOCK;
+
+    // 0x4020_0000: kernel data/bss and kernel stacks - EL1-only RW.
+    L2_TABLE.entries[1] = 0x4020_0000
+        | ATTR_NORMAL
+        | AP_EL1_RW
+        | SH_INNER_SHAREABLE
+        | ACCESS_FLAG
+        | UXN
+        | DESC_BLOCK;
+
+    // 0x4040_0000 upward: user stacks and any further user memory -
+    // RW at EL0 and EL1, never executed.
+    for i in 2..512 {
+        L2_TABLE.entries[i] = 0x4000_0000u64 + ((i as u64) << 21)
+            | ATTR_NORMAL
+            | AP_EL0_EL1_RW
+            | SH_INNER_SHAREABLE
+            | ACCESS_FLAG
+            | UXN
+            | DESC_BLOCK;
+    }
 
     asm!("dsb ish");
     asm!("tlbi vmalle1");
@@ -111,7 +140,7 @@ pub unsafe fn mmu_init() {
 
     // MAIR: attr 0 = write-back cacheable, attr 1 = Device nGnRE.
     write_sysreg("mair_el1", 0xFF | (0x04 << 8));
-    // TCR: 39-bit VA (T0SZ=25), 4KB granule, inner-shareable WB, 40-bit PA,
+    // TCR: 48-bit VA, 4KB granule, inner-shareable WB, 40-bit PA,
     // TTBR1 walks disabled.
     write_sysreg(
         "tcr_el1",
@@ -121,9 +150,6 @@ pub unsafe fn mmu_init() {
     asm!("isb");
 
     let sctlr = read_sysreg("sctlr_el1");
-    // Clear WXN (writable-implies-execute-never): QEMU's reset value has
-    // it set, which would make the writable RAM block non-executable.
-    let sctlr = sctlr & !(1 << 19);
     write_sysreg("sctlr_el1", sctlr | (1 << 0) | (1 << 2) | (1 << 12)); // M | C | I
     asm!("isb");
 }

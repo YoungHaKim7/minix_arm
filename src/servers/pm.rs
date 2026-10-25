@@ -4,11 +4,13 @@
 //! (PM_ITIMER -> kernel sys_setalarm) and PM_EXIT (-> kernel sys_exit),
 //! each answered with the standard MINIX request/reply message exchange.
 
-use super::{kernel_call, receive, send};
+use super::{kernel_call, notify, receive, send};
 use crate::minix::*;
 
 pub extern "C" fn pm_main() -> ! {
     let mut m = Message::zeroed();
+    // Simplified pm/timers.c: the endpoint whose itimer is running.
+    let mut alarm_owner: i32 = NONE;
     loop {
         // The PM main loop (servers/pm/main.c): receive ANY, execute,
         // reply.
@@ -18,6 +20,18 @@ pub extern "C" fn pm_main() -> ! {
         }
         let caller = m.m_source;
         let call = m.m_type;
+
+        // The CLOCK task notifies us when a timer expires (sys_setalarm
+        // arms the timer on its caller, i.e. us); forward the wakeup to
+        // the process that asked for the itimer (pm/timers.c role).
+        if is_notify(call) && m.m_source == CLOCK && alarm_owner != NONE {
+            let target = alarm_owner;
+            alarm_owner = NONE;
+            let mut n = Message::zeroed();
+            let _ = unsafe { notify(target, &mut n) };
+            continue;
+        }
+
         match call {
             PM_GETPID => {
                 // The PM tracks pids in mproc[]; with the flat port the
@@ -30,7 +44,8 @@ pub extern "C" fn pm_main() -> ! {
             }
             PM_ITIMER => {
                 // alarm()/setitimer(): ask the kernel to arm the timer on
-                // our behalf.
+                // our behalf; remember who to wake when it fires.
+                alarm_owner = caller;
                 let delay = unsafe { m.m_u.m_u64[0] };
                 let mut km = Message::zeroed();
                 km.m_type = SYS_SETALARM;
